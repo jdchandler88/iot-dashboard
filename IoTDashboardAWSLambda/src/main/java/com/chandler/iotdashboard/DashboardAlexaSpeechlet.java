@@ -16,13 +16,22 @@ import com.amazon.speech.speechlet.SessionEndedRequest;
 import com.amazon.speech.speechlet.SessionStartedRequest;
 import com.amazon.speech.speechlet.SpeechletResponse;
 import com.amazon.speech.speechlet.SpeechletV2;
-import com.amazon.speech.ui.PlainTextOutputSpeech;
-import com.amazon.speech.ui.Reprompt;
+import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
+import com.amazonaws.regions.Regions;
+import com.amazonaws.services.iotdata.AWSIotData;
+import com.amazonaws.services.iotdata.AWSIotDataClientBuilder;
+import com.amazonaws.services.iotdata.model.UpdateThingShadowRequest;
 import com.chandler.iotdashboard.util.AskResponses;
 import com.chandler.iotdashboard.util.EnabledSlot;
 import com.chandler.iotdashboard.util.Intents;
+import com.chandler.iotdashboard.util.ResponseFactory;
+import static com.chandler.iotdashboard.util.ResponseFactory.*;
+import com.chandler.iotdashboard.util.ShadowStateKeys;
 import com.chandler.iotdashboard.util.TellResponses;
-import org.apache.log4j.Logger;
+import java.io.UnsupportedEncodingException;
+import java.nio.ByteBuffer;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  *
@@ -78,30 +87,31 @@ public class DashboardAlexaSpeechlet implements SpeechletV2 {
         SpeechletResponse response;
         //should only be one resolution and one value (one slot type and one value for that slot)
         if (enabled.getResolutions().getResolutionsPerAuthority().size()==1) {
-            Resolution res = enabled.getResolutions().getResolutionAtIndex(0);
-            if (res.getValueWrappers().size()==1) {
-                ValueWrapper vw = res.getValueWrapperAtIndex(0);
-                boolean displayPower = true;    //let's default to "on" for now
+            Resolution resolution = enabled.getResolutions().getResolutionAtIndex(0);
+            if (resolution.getValueWrappers().size()==1) {
+                ValueWrapper vw = resolution.getValueWrapperAtIndex(0);
+                String reportBackStatus = "on";
+                Boolean displayPower = true;    //let's default to "on" for now
                 switch (vw.getValue().getId()) {
                     case EnabledSlot.ON_ID: {
                         displayPower = true;
-                        response = getTellResponse("Display will be turned on.");
+                        reportBackStatus = "on";
                         break;
                     }
                     case EnabledSlot.OFF_ID: {
                         displayPower = false;
-                        response = getTellResponse("Display will be turned off.");
+                        reportBackStatus = "off";
                         break;
                     }
                     default: {
-                        //shouldn't ever get here--i dunno what to do here
-                        //log error? create a response?
-                        response = getTellResponse("I'm not sure what you're asking. Sorry.");
+                        //shouldn't ever get here--i dunno what to do here: log error? create a response?
                         break;
                     }
                 }
                 //set the display
-                
+                String successResponse = "Display is now " + reportBackStatus;
+                String result = updateThingShadow(ShadowStateKeys.DISPLAY_POWER, displayPower.toString(), successResponse, "Failed to set display power.");
+                response = getTellResponse(result);
             } else {
                 response = getTellResponse("There's more than one value wrapper. What?");
             }
@@ -113,44 +123,36 @@ public class DashboardAlexaSpeechlet implements SpeechletV2 {
     }
     
     private SpeechletResponse handleWakeDisplay() {
-        return getTellResponse("Display will wake up.");
+        String result = updateThingShadow(ShadowStateKeys.DISPLAY_WAKE_TOGGLE, Boolean.TRUE.toString(), "Woke the display.", "Failed to wake the display");
+        return ResponseFactory.getTellResponse(result);
     }
     
     private SpeechletResponse handleNewPictures() {
-        return getTellResponse("The board will refresh the batch of pictures.");
+        String result = updateThingShadow(ShadowStateKeys.REFRESH_PICTURES_TOGGLE, Boolean.TRUE.toString(), "Pictures refreshed.", "Failed to refresh pictures.");
+        return ResponseFactory.getTellResponse(result);
+    }
+    
+    private String updateThingShadow(String desiredKey, String desiredValue, String successMessage, String failureMessage) {
+        try {
+            AWSIotData data = AWSIotDataClientBuilder.standard()
+                .withRegion(Regions.US_EAST_1)
+                .withCredentials(new DefaultAWSCredentialsProviderChain())
+                .build();
+            UpdateThingShadowRequest req = new UpdateThingShadowRequest();
+            String thingName = System.getenv("thingName");
+            req.setThingName(thingName);
+            String payload = "{\"state\":{\"desired\":{\"" + desiredKey + "\":\"" + desiredValue + "\"}}}";
+            req.setPayload(ByteBuffer.wrap(payload.getBytes("UTF8")));
+            data.updateThingShadow(req);
+            return successMessage;
+        } catch (UnsupportedEncodingException ex) {
+            java.util.logging.Logger.getLogger(DashboardAlexaSpeechlet.class.getName()).log(Level.SEVERE, null, ex);
+            return failureMessage;
+        }
     }
     
     private void log(String message) {
         Logger.getLogger(getClass().getName()).info(message);
     }
-    
-//    private SpeechletResponse getWelcomeResponse() {
-//        return getTellResponse(TellResponses.LAUNCH_RESPONSE);
-//    }
-//    
-//    private SpeechletResponse getNullIntentResponse() {
-//        String text = AskResponses.NULL_INTENT;
-//        return getAskResponse(text);
-//    }
-    
-    private SpeechletResponse getTellResponse(String text) {
-        return SpeechletResponse.newTellResponse(getSpeech(text));
-    }
-    
-    private SpeechletResponse getAskResponse(String text) {
-        return SpeechletResponse.newAskResponse(getSpeech(text), getReprompt(text));
-    }
-    
-    private PlainTextOutputSpeech getSpeech(String text) {
-        PlainTextOutputSpeech speech = new PlainTextOutputSpeech();
-        speech.setText(text);
-        return speech;
-    }
-    
-    private Reprompt getReprompt(String text) {
-        Reprompt reprompt = new Reprompt();
-        reprompt.setOutputSpeech(getSpeech(text));
-        return reprompt;
-    }
-    
+
 }
